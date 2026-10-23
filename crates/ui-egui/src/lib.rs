@@ -12,6 +12,7 @@ pub mod branch_ui;
 pub mod canvas;
 pub mod cjk;
 pub mod colorpicker;
+pub mod cloud;
 pub mod comments;
 pub mod component_panel;
 pub mod control;
@@ -214,6 +215,8 @@ mod ui_scale_tests;
 mod variables_export_ui_tests;
 #[cfg(test)]
 mod variables_rename_tests;
+#[cfg(test)]
+mod variants_discovery_tests;
 #[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
@@ -495,6 +498,8 @@ pub struct UiState {
     pub page_filter: String,
     /// The height asked for the pages list (`None`: a share of the panel).
     pub pages_height: Option<f32>,
+    /// The document and active page last drawn in the pages list.
+    pub pages_seen_page: Option<(u64, NodeId)>,
     pub expanded: BTreeSet<NodeId>,
     /// The layer being renamed in the layers panel.
     pub rename: Option<layers::Rename>,
@@ -667,6 +672,7 @@ impl Default for UiState {
             page_search: false,
             page_filter: String::new(),
             pages_height: None,
+            pages_seen_page: None,
             expanded: BTreeSet::new(),
             rename: None,
             rename_page: None,
@@ -765,6 +771,14 @@ pub struct FigApp {
     pub ui: UiState,
     pub canvas: canvas::CanvasState,
     pub services: Box<dyn Services>,
+    /// Open and Save against CollabCraft. Empty until a host connects a backend.
+    pub cloud: cloud::CloudFiles,
+    /// Snapshots of documents whose cloud save is still in flight.
+    pub(crate) cloud_sent: cloud::Sent,
+    /// Share a cloud document with somebody else.
+    pub share: craft_ui::share::ShareDialog,
+    /// Who else is in the document.
+    pub presence: craft_ui::presence::PresenceBar,
     worker: Option<render_worker::Worker>,
     fonts_installed: bool,
     /// System faces for scripts the built-in fonts lack were added (after the font scan), with
@@ -812,6 +826,10 @@ impl FigApp {
             session,
             canvas: canvas::CanvasState::default(),
             services,
+            cloud: cloud::CloudFiles::new(),
+            cloud_sent: cloud::Sent::new(),
+            share: craft_ui::share::ShareDialog::new(),
+            presence: craft_ui::presence::PresenceBar::new().badges_only(),
             worker: None,
             fonts_installed: false,
             script_fonts: None,
@@ -831,9 +849,17 @@ impl FigApp {
         }
     }
 
+    /// Dismiss the composer after a successful switch away from the Comment tool.
+    pub(crate) fn clear_comment_draft_after_tool_set(&mut self, id: &str, succeeded: bool) {
+        if id == "tool.set" && succeeded && self.session.tool.tool != figcraft_engine::tools::ToolId::Comment {
+            self.ui.comments.draft = None;
+        }
+    }
+
     /// Run a command, surfacing errors as a toast. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         let r = self.session.execute(id, &params);
+        self.clear_comment_draft_after_tool_set(id, r.is_ok());
         self.handle_ui_requests();
         r.map_err(|e| self.failed(id, &e)).ok()
     }
@@ -1157,6 +1183,12 @@ impl FigApp {
     }
 
     pub fn save(&mut self) {
+        if crate::cloud::has_target(self) {
+            if let Err(e) = crate::cloud::save(self) {
+                self.show_error(e);
+            }
+            return;
+        }
         // A branch tab saves its main file.
         let tab = figcraft_engine::branches::file_tab(&self.session);
         // A path ending in .fig is never saved over silently: a .fig destination is an export copy.
@@ -1516,11 +1548,15 @@ impl FigApp {
             }
             self.background_done(&ctx);
         }
+        cloud::poll(self, &ctx);
+        cloud::share_save(self);
         // Files that arrived without a command (joined, recovered) take the kept View toggles too.
         self.session.apply_view_prefs();
         windows::begin(self, &ctx);
         let (files, prefs) = (self.session.docs.len(), self.session.prefs.clone());
         self.frame(ui);
+        self.share.show(&ctx);
+        cloud::conflict_modal(self, &ctx);
         windows::settle(self, &ctx, files);
         if self.session.prefs != prefs {
             windows::repaint_others(self, &ctx);
@@ -1815,6 +1851,12 @@ pub(crate) const OPEN_EXTENSIONS: &[&str] = &["figcraft", "fig", "json", "svg", 
 /// Whether `path` names a file type that opens as a document (the extension, in any case).
 pub(crate) fn opens(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| OPEN_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// Whether `path` is a whole document (`.figcraft`, `.fig`, file JSON) rather than an image or SVG:
+/// dropped on the canvas it opens as a file of its own instead of adding its pages to the open one.
+pub(crate) fn is_document(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["figcraft", "fig", "json"].iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
 /// Reads the contents of dropped file `name` that has no file on disk to read by path.
