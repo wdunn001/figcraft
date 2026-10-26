@@ -145,13 +145,6 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         let left = Rect::from_min_size(rect.min, vec2(SIDEBAR, rect.height()));
         ui.painter().line_segment([left.right_top(), left.right_bottom()], Stroke::new(1.0, t.border));
         sidebar(app, ui, &t, left);
-        if app.ui.home_view.file_query.trim().is_empty() && app.ui.home_view.section == Section::Online {
-            // Your online files lay themselves out in the area (and scroll their own list).
-            let area = Rect::from_min_max(pos2(left.max.x + 40.0, rect.min.y + 24.0), rect.max - vec2(40.0, 24.0));
-            crate::online::section(app, ui, area, &t);
-            opened_join(app);
-            return;
-        }
         let main = Rect::from_min_max(pos2(left.max.x, rect.min.y), rect.max);
         ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
             egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
@@ -160,6 +153,10 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
                     if app.ui.home_view.file_query.trim().is_empty() {
                         match app.ui.home_view.section {
                             Section::Templates => templates(app, ui, &t),
+                            Section::Online => {
+                                crate::online::section(app, ui, &t);
+                                opened_join(app);
+                            }
                             _ => recents(app, ui, &t),
                         }
                     } else {
@@ -180,19 +177,11 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
 fn dropped(app: &mut FigApp, ctx: &egui::Context) {
     let files = ctx.input(|i| i.raw.dropped_files.clone());
     for f in files {
-        let path = f.path().to_path_buf();
-        if !crate::opens(&path) {
+        if !crate::opens(f.path()) {
             app.toast(tr("Drop a .figcraft, .fig, .json, .svg or image file."));
             continue;
         }
-        // `opens` saw an extension, so there is a file name to tell the format by.
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let (params, read) = if path.exists() {
-            (json!({"path": path.to_string_lossy()}), None)
-        } else {
-            (json!({"name": name}), Some(crate::dropped_bytes(&f, &name)))
-        };
-        app.ui.pending_opens.push(crate::pending_open::PendingOpen { label: name, params, command: "file.open", target: None, read });
+        crate::pending_open::open_dropped(app, &f);
     }
 }
 
