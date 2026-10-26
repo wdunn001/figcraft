@@ -136,7 +136,3 @@ panic = "abort"
 # collab-craft 3c77c3e still names github.com/wdunn001/craft-libs. Redirect that
 # source to the same 6f0a6d2 on the org repo so FigCraft does not fetch a personal
 # craft-libs URL, and so ShareBackend sees one craft_ui type.
-[patch."https://github.com/wdunn001/craft-libs"]
-craft-ui = {git = "https://github.com/wdunn001/craft-libs", branch = "quasarke"}
-craft-cloud = {git = "https://github.com/wdunn001/craft-libs", branch = "quasarke"}
-
